@@ -186,7 +186,7 @@ pub enum GssapiStep {
     /// The context is not established yet; send `token` to the server and
     /// wait for its next token.
     Continue {
-        token: Vec<u8>,
+        token: Zeroizing<Vec<u8>>,
     },
     /// The context is established. `token` is the final output token, if any.
     /// `mic` is the MIC computed over the `mic_data` passed to
@@ -195,8 +195,8 @@ pub enum GssapiStep {
     /// (RFC 4462, Section 3.5); `None` falls back to
     /// `SSH_MSG_USERAUTH_GSSAPI_EXCHANGE_COMPLETE`.
     Complete {
-        token: Option<Vec<u8>>,
-        mic: Option<Vec<u8>>,
+        token: Option<Zeroizing<Vec<u8>>>,
+        mic: Option<ZeroizingVec<u8>>>,
     },
 }
 
@@ -209,12 +209,12 @@ pub enum GssapiError {
     Status {
         major_status: u32,
         minor_status: u32,
-        message: String,
+        message: Zeroizing<String>,
     },
     /// `SSH_MSG_USERAUTH_GSSAPI_ERRTOK` (RFC 4462, Section 3.10). May be
     /// passed to `GSS_Init_sec_context()` to obtain mechanism-specific
     /// error details.
-    ErrorToken(Vec<u8>),
+    ErrorToken(Zeroizing<Vec<u8>>),
 }
 
 #[cfg_attr(feature = "async-trait", async_trait::async_trait)]
@@ -234,8 +234,8 @@ pub trait GssapiAuthenticator: Sized {
     fn gssapi_step(
         &mut self,
         selected_mechanism: Option<Vec<u8>>,
-        input_token: Option<Vec<u8>>,
-        mic_data: Vec<u8>,
+        input_token: Option<Zeroizing<Vec<u8>>>,
+        mic_data: Zeroizing<Vec<u8>>,
     ) -> impl Future<Output = Result<GssapiStep, Self::Error>> + Send;
 
     /// Called when the server reports a GSS-API error; the server follows up
@@ -279,7 +279,7 @@ impl<R: AsyncRead + AsyncWrite + Unpin + Send> Signer
 pub enum Method {
     None,
     Password {
-        password: String,
+        password: Zeroizing<String>,
     },
     PublicKey {
         key: PrivateKeyWithHashAlg,
