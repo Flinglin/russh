@@ -390,7 +390,7 @@ impl<H: Handler> Handle<H> {
     ///   of prompts. If a prompt has an empty string, then the response should be an empty string.
     pub async fn authenticate_keyboard_interactive_respond(
         &mut self,
-        responses: Vec<String>,
+        responses: impl Into<Zeroizing<Vec<String>>>,
     ) -> Result<KeyboardInteractiveAuthResponse, crate::Error> {
         self.sender
             .send(Msg::AuthInfoResponse { responses:responses.into() })
