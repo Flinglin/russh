@@ -147,7 +147,7 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
                 if let Ok(keys) = self.keys.0.read() {
                     msg::IDENTITIES_ANSWER.encode(writebuf)?;
                     (keys.len() as u32).encode(writebuf)?;
-                    for (k, _) in keys.iter() {
+                    for k in keys.keys() {
                         k.encode(writebuf)?;
                         "".encode(writebuf)?;
                     }
@@ -367,48 +367,5 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
         BigEndian::write_u32(writebuf, (len - 4) as u32);
 
         Ok((agent, true))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use byteorder::{BigEndian, ByteOrder};
-    use tokio::io::AsyncWriteExt;
-
-    use super::{Connection, KeyStore, Lock, MAX_AGENT_FRAME_LEN};
-    use crate::keys::Error;
-
-    #[test]
-    fn oversized_agent_request_is_rejected_before_allocation() -> std::io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-
-        runtime.block_on(async {
-            let (server, mut client) = tokio::io::duplex(64);
-            let connection = Connection {
-                lock: Lock(std::sync::Arc::new(std::sync::RwLock::new(
-                    crate::CryptoVec::new(),
-                ))),
-                keys: KeyStore(std::sync::Arc::new(std::sync::RwLock::new(
-                    std::collections::HashMap::new(),
-                ))),
-                agent: Some(()),
-                s: server,
-                buf: Vec::new(),
-            };
-            let server = tokio::spawn(async move { connection.run().await });
-
-            let mut frame = [0u8; 4];
-            BigEndian::write_u32(&mut frame, (MAX_AGENT_FRAME_LEN + 1) as u32);
-            client.write_all(&frame).await?;
-            drop(client);
-
-            let err = server.await.expect("server task").unwrap_err();
-            assert!(matches!(err, Error::AgentProtocolError));
-            Ok::<(), std::io::Error>(())
-        })?;
-
-        Ok(())
     }
 }

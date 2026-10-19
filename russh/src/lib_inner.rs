@@ -11,9 +11,6 @@ use ssh_encoding::{Decode, Encode};
 use thiserror::Error;
 use tokio::io::AsyncWrite;
 
-#[cfg(test)]
-mod tests;
-
 mod auth;
 
 mod cert;

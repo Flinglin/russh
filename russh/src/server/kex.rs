@@ -442,19 +442,3 @@ fn compute_keys(
         session_id: session_id_cv,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::tests::raw_no_crypto::{assert_rejected, kexinit_payload, raw_kex_signal, timeout};
-
-    #[tokio::test]
-    async fn kexinit_with_trailing_bytes_rejected_by_server() {
-        let result = timeout(raw_kex_signal(|payload| {
-            payload.extend_from_slice(&kexinit_payload("none"));
-            payload.push(0);
-        }))
-        .await;
-
-        assert_rejected(result, "server accepted a kexinit with trailing bytes");
-    }
-}

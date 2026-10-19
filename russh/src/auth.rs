@@ -21,7 +21,7 @@ use std::sync::Arc;
 use ssh_key::{Certificate, HashAlg, PrivateKey};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::helpers::NameList;
 use crate::keys::PrivateKeyWithHashAlg;
@@ -196,7 +196,7 @@ pub enum GssapiStep {
     /// `SSH_MSG_USERAUTH_GSSAPI_EXCHANGE_COMPLETE`.
     Complete {
         token: Option<Zeroizing<Vec<u8>>>,
-        mic: Option<ZeroizingVec<u8>>>,
+        mic: Option<Zeroizing<Vec<u8>>>,
     },
 }
 

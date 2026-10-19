@@ -8,6 +8,7 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::process::Command;
 
 /// A type to implement either a TCP socket, or proxying through an external command.
+#[allow(clippy::large_enum_variant)]
 pub enum Stream {
     #[allow(missing_docs)]
     Child(tokio::process::Child),

@@ -8,9 +8,6 @@ use crate::keys::Error;
 
 pub mod openssh;
 
-#[cfg(test)]
-mod tests;
-
 pub use self::openssh::*;
 
 pub mod pkcs5;

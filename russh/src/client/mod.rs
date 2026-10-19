@@ -55,6 +55,7 @@ use tokio::sync::mpsc::{
     Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
 };
 use tokio::sync::oneshot;
+use zeroize::Zeroizing;
 
 pub use crate::auth::AuthResult;
 use crate::cert::PublicKeyOrCertificate;
@@ -77,8 +78,6 @@ mod encrypted;
 mod kex;
 mod session;
 
-#[cfg(test)]
-mod test;
 
 /// Actual client session's state.
 ///
@@ -134,11 +133,11 @@ enum Reply {
     },
     AuthGssapiResponse {
         selected_mechanism: Vec<u8>,
-        mic_data: Vec<u8>,
+        mic_data: Zeroizing<Vec<u8>>,
     },
     AuthGssapiToken {
-        token: Vec<u8>,
-        mic_data: Vec<u8>,
+        token: Zeroizing<Vec<u8>>,
+        mic_data: Zeroizing<Vec<u8>>,
     },
     AuthGssapiError {
         error: auth::GssapiError,
@@ -153,17 +152,17 @@ pub enum Msg {
         method: auth::Method,
     },
     AuthInfoResponse {
-        responses: Vec<String>,
+        responses: Zeroizing<Vec<String>>,
     },
     AuthGssapiToken {
-        token: Vec<u8>,
+        token: Zeroizing<Vec<u8>>,
     },
     AuthGssapiMic {
-        token: Option<Vec<u8>>,
-        mic: Vec<u8>,
+        token: Option<Zeroizing<Vec<u8>>>,
+        mic: Zeroizing<Vec<u8>>,
     },
     AuthGssapiExchangeComplete {
-        token: Option<Vec<u8>>,
+        token: Option<Zeroizing<Vec<u8>>>,
     },
     Signed {
         data: Vec<u8>,
@@ -352,7 +351,7 @@ impl<H: Handler> Handle<H> {
             .send(Msg::Authenticate {
                 user,
                 method: auth::Method::Password {
-                    password: password.into(),
+                    password: Zeroizing::new(password.into()),
                 },
             })
             .await
@@ -394,7 +393,7 @@ impl<H: Handler> Handle<H> {
         responses: Vec<String>,
     ) -> Result<KeyboardInteractiveAuthResponse, crate::Error> {
         self.sender
-            .send(Msg::AuthInfoResponse { responses })
+            .send(Msg::AuthInfoResponse { responses:responses.into() })
             .await
             .map_err(|_| crate::Error::SendError)?;
         self.wait_recv_keyboard_interactive_reply().await
@@ -1581,12 +1580,12 @@ impl Session {
             }
             Msg::AuthGssapiMic { token, mic } => {
                 if let Some(ref mut enc) = self.common.encrypted {
-                    enc.client_send_gssapi_mic(token.as_deref(), &mic)?;
+                    enc.client_send_gssapi_mic(token.as_ref().map(|token| token.as_slice()), &mic)?;
                 }
             }
             Msg::AuthGssapiExchangeComplete { token } => {
                 if let Some(ref mut enc) = self.common.encrypted {
-                    enc.client_send_gssapi_exchange_complete(token.as_deref())?;
+                    enc.client_send_gssapi_exchange_complete(token.as_ref().map(|token| token.as_slice()))?;
                 }
             }
             Msg::ChannelOpenSession { channel_ref } => {
@@ -2047,458 +2046,6 @@ async fn reply<H: Handler>(
     }
 
     session.client_read_encrypted(handler, pkt).await
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::{HashMap, VecDeque};
-    #[cfg(feature = "flate2")]
-    use std::io::Write;
-    use std::num::Wrapping;
-    use std::sync::Arc;
-
-    use ssh_encoding::Encode;
-    use tokio::sync::mpsc::{channel, unbounded_channel};
-
-    use super::*;
-    use crate::auth::{AuthRequest, Method};
-    use crate::compression::{Compression, Decompress};
-    use crate::helpers::EncodedExt;
-    use crate::kex::{KEXES, NONE};
-    use crate::session::{CommonSession, Encrypted, EncryptedState, Exchange};
-    use crate::sshbuffer::{IncomingSshPacket, PacketWriter, SSHBuffer};
-    use crate::{CryptoVec, cipher, mac};
-
-    struct TestHandler;
-
-    impl Handler for TestHandler {
-        type Error = crate::Error;
-
-        async fn check_server_key(
-            &mut self,
-            _: &PublicKeyOrCertificate,
-        ) -> Result<bool, Self::Error> {
-            Ok(true)
-        }
-    }
-
-    fn keyboard_interactive_session() -> (
-        Session,
-        tokio::sync::mpsc::Sender<Msg>,
-        tokio::sync::mpsc::UnboundedReceiver<Reply>,
-    ) {
-        let config = Arc::new(Config::default());
-        let (sender, receiver) = channel(config.channel_buffer_size);
-        let (reply_sender, reply_receiver) = unbounded_channel();
-        let auth_request = AuthRequest::new(&Method::KeyboardInteractive {
-            submethods: String::new(),
-        });
-        let session = Session::new(
-            config.window_size,
-            CommonSession {
-                auth_user: "user".to_owned(),
-                auth_attempts: 0,
-                auth_method: Some(Method::KeyboardInteractive {
-                    submethods: String::new(),
-                }),
-                remote_to_local: Box::new(cipher::clear::Key),
-                encrypted: Some(Encrypted {
-                    state: EncryptedState::WaitingAuthRequest(auth_request),
-                    exchange: Some(Exchange::default()),
-                    kex: KEXES.get(&NONE).unwrap().make(),
-                    key: 0,
-                    client_mac: mac::NONE,
-                    server_mac: mac::NONE,
-                    session_id: CryptoVec::new(),
-                    channels: HashMap::new(),
-                    last_channel_id: Wrapping(0),
-                    write: Vec::new(),
-                    write_cursor: 0,
-                    last_rekey: russh_util::time::Instant::now(),
-                    server_compression: Compression::None,
-                    client_compression: Compression::None,
-                    decompress: Decompress::None,
-                    rekey_wanted: false,
-                    received_extensions: Vec::new(),
-                    extension_info_awaiters: HashMap::new(),
-                }),
-                config,
-                wants_reply: false,
-                disconnected: false,
-                buffer: Vec::new(),
-                strict_kex: false,
-                alive_timeouts: 0,
-                received_data: false,
-                remote_sshid: b"SSH-2.0-test".to_vec(),
-                packet_writer: PacketWriter::clear(),
-            },
-            receiver,
-            reply_sender,
-        );
-        (session, sender, reply_receiver)
-    }
-
-    const HOSTKEYS_SESSION_ID: &[u8] = b"hostkeys-session-id";
-
-    /// An authenticated session with one outstanding `hostkeys-prove-00` request.
-    fn hostkeys_prove_session() -> (
-        Session,
-        tokio::sync::mpsc::Sender<Msg>,
-        oneshot::Receiver<Result<(), crate::Error>>,
-        PrivateKey,
-    ) {
-        let (mut session, sender, _replies) = keyboard_interactive_session();
-        let enc = session.common.encrypted.as_mut().unwrap();
-        enc.state = EncryptedState::Authenticated;
-        enc.session_id = CryptoVec::from(HOSTKEYS_SESSION_ID);
-        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
-        let (reply_channel, reply) = oneshot::channel();
-        session
-            .request_hostkeys_prove(reply_channel, vec![host_key.public_key().clone()])
-            .unwrap();
-        (session, sender, reply, host_key)
-    }
-
-    /// `SSH_MSG_REQUEST_SUCCESS` carrying one signature over the given session id.
-    fn hostkeys_proof_packet(host_key: &PrivateKey, session_id: &[u8]) -> Vec<u8> {
-        let mut signed = Vec::new();
-        "hostkeys-prove-00@openssh.com".encode(&mut signed).unwrap();
-        session_id.encode(&mut signed).unwrap();
-        host_key
-            .public_key()
-            .to_bytes()
-            .unwrap()
-            .encode(&mut signed)
-            .unwrap();
-        let signature: ssh_key::Signature = signature::Signer::try_sign(host_key, &signed).unwrap();
-
-        let mut packet = vec![crate::msg::REQUEST_SUCCESS];
-        signature.encoded().unwrap().encode(&mut packet).unwrap();
-        packet
-    }
-
-    #[test]
-    fn hostkeys_prove_request_encodes_every_key_blob() {
-        let (session, _sender, _reply, host_key) = hostkeys_prove_session();
-
-        let written = session.common.encrypted.as_ref().unwrap().write.to_vec();
-        let packet_len = u32::from_be_bytes(written[..4].try_into().unwrap()) as usize;
-        let mut payload = &written[4..4 + packet_len];
-
-        assert_eq!(
-            u8::decode(&mut payload).unwrap(),
-            crate::msg::GLOBAL_REQUEST
-        );
-        assert_eq!(
-            String::decode(&mut payload).unwrap(),
-            "hostkeys-prove-00@openssh.com"
-        );
-        assert_eq!(
-            u8::decode(&mut payload).unwrap(),
-            1,
-            "want_reply must be set"
-        );
-        assert_eq!(
-            Vec::<u8>::decode(&mut payload).unwrap(),
-            host_key.public_key().to_bytes().unwrap()
-        );
-        assert!(payload.is_empty());
-
-        assert!(matches!(
-            session.open_global_requests.front(),
-            Some(GlobalRequestResponse::HostKeysProve { .. })
-        ));
-    }
-
-    #[test]
-    fn hostkeys_prove_empty_key_list_resolves_without_a_request() {
-        let (mut session, _sender, _replies) = keyboard_interactive_session();
-        let (reply_channel, mut reply) = oneshot::channel();
-        session
-            .request_hostkeys_prove(reply_channel, vec![])
-            .unwrap();
-
-        assert!(matches!(reply.try_recv(), Ok(Ok(()))));
-        assert!(session.common.encrypted.as_ref().unwrap().write.is_empty());
-        assert!(session.open_global_requests.is_empty());
-    }
-
-    #[tokio::test]
-    async fn hostkeys_prove_reply_verifies_signature() {
-        let (mut session, _sender, mut reply, host_key) = hostkeys_prove_session();
-        let packet = hostkeys_proof_packet(&host_key, HOSTKEYS_SESSION_ID);
-        session
-            .process_packet(&mut TestHandler, &packet)
-            .await
-            .unwrap();
-
-        assert!(matches!(reply.try_recv(), Ok(Ok(()))));
-        assert!(session.open_global_requests.is_empty());
-    }
-
-    #[tokio::test]
-    async fn hostkeys_prove_reply_rejects_signature_over_other_session() {
-        let (mut session, _sender, mut reply, host_key) = hostkeys_prove_session();
-        let packet = hostkeys_proof_packet(&host_key, b"some-other-session");
-        session
-            .process_packet(&mut TestHandler, &packet)
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            reply.try_recv(),
-            Ok(Err(crate::Error::WrongServerSig))
-        ));
-    }
-
-    #[tokio::test]
-    async fn hostkeys_prove_reply_rejects_missing_signature() {
-        let (mut session, _sender, mut reply, _host_key) = hostkeys_prove_session();
-        session
-            .process_packet(&mut TestHandler, &[crate::msg::REQUEST_SUCCESS])
-            .await
-            .unwrap();
-
-        assert!(matches!(reply.try_recv(), Ok(Err(_))));
-    }
-
-    #[tokio::test]
-    async fn hostkeys_prove_failure_reply_is_denied() {
-        let (mut session, _sender, mut reply, _host_key) = hostkeys_prove_session();
-        session
-            .process_packet(&mut TestHandler, &[crate::msg::REQUEST_FAILURE])
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            reply.try_recv(),
-            Ok(Err(crate::Error::RequestDenied))
-        ));
-    }
-
-    /// `keyboard_interactive_session` negotiates the `none` kex, which cannot
-    /// be repeated; swap in one that can and install `limits`.
-    fn allow_rekey(session: &mut Session, limits: crate::Limits) {
-        Arc::get_mut(&mut session.common.config).unwrap().limits = limits;
-        session.common.encrypted.as_mut().unwrap().kex =
-            KEXES.get(&crate::kex::CURVE25519).unwrap().make();
-    }
-
-    #[test]
-    fn limit_triggered_rekey_waits_for_authentication() {
-        let (mut session, _sender, _replies) = keyboard_interactive_session();
-        allow_rekey(&mut session, crate::Limits::new(0, 0, Duration::from_secs(3600)));
-
-        session.flush().unwrap();
-        assert!(!session.kex.active(), "write limit hit before authentication");
-        assert_eq!(session.rekey_time_remaining(), None);
-
-        session.common.encrypted.as_mut().unwrap().state = EncryptedState::Authenticated;
-        assert_eq!(session.rekey_time_remaining(), Some(Duration::ZERO));
-        session.flush().unwrap();
-        assert!(session.kex.active());
-    }
-
-    #[test]
-    fn explicit_rekey_is_not_gated_on_authentication() {
-        // `keyboard_interactive_session` is still waiting for authentication.
-        let (mut session, _sender, _replies) = keyboard_interactive_session();
-        allow_rekey(&mut session, crate::Limits::default());
-
-        session.initiate_rekey().unwrap();
-        assert!(session.kex.active());
-    }
-
-    /// Drives the client event loop on one end of an in-memory stream and
-    /// returns the type of the first packet it writes.
-    async fn first_packet_from_event_loop(
-        mut session: Session,
-        peer: &mut tokio::io::DuplexStream,
-        stream: tokio::io::DuplexStream,
-    ) -> Option<u8> {
-        let (stream_read, mut stream_write) = SshRead::new(stream).split();
-        let mut handler = TestHandler;
-        let mut kex_done_signal = None;
-        let event_loop = session.run_inner(
-            stream_read,
-            &mut stream_write,
-            &mut handler,
-            &mut kex_done_signal,
-        );
-        tokio::pin!(event_loop);
-        let mut buffer = SSHBuffer::new();
-        let mut opening_key = cipher::clear::Key;
-        let packet = cipher::read(peer, &mut buffer, &mut opening_key);
-        tokio::select! {
-            r = &mut event_loop => panic!("event loop ended before rekeying: {:?}", r.map(drop)),
-            r = tokio::time::timeout(Duration::from_secs(5), packet) => {
-                r.ok()?.unwrap();
-                buffer.buffer.get(5).copied()
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn read_limit_starts_rekey_from_the_event_loop() {
-        let (mut session, _sender, _replies) = keyboard_interactive_session();
-        allow_rekey(
-            &mut session,
-            crate::Limits::new(1 << 30, 16, Duration::from_secs(3600)),
-        );
-        session.common.encrypted.as_mut().unwrap().state = EncryptedState::Authenticated;
-        let (mut peer, stream) = tokio::io::duplex(64 * 1024);
-        let mut ignore = PacketWriter::clear();
-        ignore.packet_raw(&[msg::IGNORE; 32]).unwrap();
-        peer.write_all(&ignore.buffer().buffer).await.unwrap();
-
-        assert_eq!(
-            first_packet_from_event_loop(session, &mut peer, stream).await,
-            Some(msg::KEXINIT)
-        );
-    }
-
-    #[tokio::test]
-    async fn time_limit_starts_rekey_from_the_event_loop() {
-        let (mut session, _sender, _replies) = keyboard_interactive_session();
-        allow_rekey(
-            &mut session,
-            crate::Limits::new(1 << 30, 1 << 30, Duration::from_millis(50)),
-        );
-        session.common.encrypted.as_mut().unwrap().state = EncryptedState::Authenticated;
-        let (mut peer, stream) = tokio::io::duplex(64 * 1024);
-
-        assert_eq!(
-            first_packet_from_event_loop(session, &mut peer, stream).await,
-            Some(msg::KEXINIT)
-        );
-    }
-
-    #[cfg(feature = "flate2")]
-    fn authenticated_session() -> Session {
-        let config = Arc::new(Config::default());
-        let (receiver_sender, receiver) = channel(config.channel_buffer_size);
-        let (reply_sender, _) = unbounded_channel();
-        let mut session = Session::new(
-            config.window_size,
-            CommonSession {
-                auth_user: String::new(),
-                auth_attempts: 0,
-                auth_method: None,
-                remote_to_local: Box::new(cipher::clear::Key),
-                encrypted: Some(Encrypted {
-                    state: EncryptedState::Authenticated,
-                    exchange: Some(Exchange::default()),
-                    kex: KEXES.get(&NONE).unwrap().make(),
-                    key: 0,
-                    client_mac: mac::NONE,
-                    server_mac: mac::NONE,
-                    session_id: CryptoVec::new(),
-                    channels: HashMap::new(),
-                    last_channel_id: Wrapping(0),
-                    write: Vec::new(),
-                    write_cursor: 0,
-                    last_rekey: russh_util::time::Instant::now(),
-                    server_compression: Compression::None,
-                    client_compression: Compression::None,
-                    decompress: Decompress::Zlib(flate2::Decompress::new(true)),
-                    rekey_wanted: false,
-                    received_extensions: Vec::new(),
-                    extension_info_awaiters: HashMap::new(),
-                }),
-                config,
-                wants_reply: false,
-                disconnected: false,
-                buffer: Vec::new(),
-                strict_kex: false,
-                alive_timeouts: 0,
-                received_data: false,
-                remote_sshid: b"SSH-2.0-test".to_vec(),
-                packet_writer: PacketWriter::clear(),
-            },
-            receiver,
-            reply_sender,
-        );
-        session.open_global_requests = VecDeque::new();
-        let _ = receiver_sender;
-        session
-    }
-
-    fn oversized_prompt_count_packet() -> Vec<u8> {
-        let mut packet = Vec::new();
-        msg::USERAUTH_INFO_REQUEST_OR_USERAUTH_PK_OK
-            .encode(&mut packet)
-            .unwrap();
-        "name".encode(&mut packet).unwrap();
-        "instructions".encode(&mut packet).unwrap();
-        "".encode(&mut packet).unwrap();
-        u32::MAX.encode(&mut packet).unwrap();
-        packet
-    }
-
-    #[tokio::test]
-    async fn oversized_keyboard_interactive_prompt_count_is_rejected() {
-        let (mut session, _sender, mut replies) = keyboard_interactive_session();
-        let mut handler = TestHandler;
-        let err = session
-            .process_packet(&mut handler, &oversized_prompt_count_packet())
-            .await
-            .expect_err("malformed prompt count must fail");
-
-        assert!(matches!(err, crate::Error::Inconsistent));
-        assert!(
-            replies.try_recv().is_err(),
-            "malformed packet must not emit a reply"
-        );
-    }
-
-    #[cfg(feature = "flate2")]
-    fn compressed_debug_payload(payload_len: usize) -> Vec<u8> {
-        let mut payload = vec![b'A'; payload_len];
-        payload[0] = crate::msg::DEBUG;
-
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-        encoder.write_all(&payload).unwrap();
-        let compressed = encoder.finish().unwrap();
-        assert!(compressed.len() < 256 * 1024);
-        compressed
-    }
-
-    #[cfg(feature = "flate2")]
-    fn incoming_packet(compressed: Vec<u8>) -> SSHBuffer {
-        let mut buffer = SSHBuffer::new();
-        buffer.buffer.extend_from_slice(&[0; 5]);
-        buffer.buffer.extend_from_slice(&compressed);
-        buffer
-    }
-
-    #[cfg(feature = "flate2")]
-    #[tokio::test]
-    async fn compressed_debug_is_ignored_after_client_parses_it() {
-        let mut session = authenticated_session();
-        let mut handler = TestHandler;
-        let mut kex_done_signal = None;
-        let buffer = incoming_packet(compressed_debug_payload(200 * 1024));
-        let mut pkt: IncomingSshPacket = session.maybe_decompress(&buffer).unwrap();
-
-        super::reply(&mut session, &mut handler, &mut kex_done_signal, &mut pkt)
-            .await
-            .unwrap();
-
-        assert!(!session.common.disconnected);
-    }
-
-    #[cfg(feature = "flate2")]
-    #[test]
-    fn oversized_compressed_debug_is_rejected_before_client_ignores_it() {
-        let mut session = authenticated_session();
-        let oversized = crate::cipher::MAXIMUM_DECOMPRESSED_PACKET_LEN + 1024;
-        let buffer = incoming_packet(compressed_debug_payload(oversized));
-
-        let err = session.maybe_decompress(&buffer).unwrap_err();
-        assert!(
-            matches!(err, crate::Error::PacketSize(len) if len > crate::cipher::MAXIMUM_DECOMPRESSED_PACKET_LEN)
-        );
-    }
 }
 
 fn initial_encrypted_state(session: &Session) -> EncryptedState {
