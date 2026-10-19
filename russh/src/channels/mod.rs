@@ -5,11 +5,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 
+use crate::channels::receive::ReceiveState;
 use crate::{ChannelId, ChannelOpenFailure, Error, Pty, Sig};
 
-pub mod io;
-
 mod channel_ref;
+pub mod io;
+pub(crate) mod receive;
 pub use channel_ref::ChannelRef;
 
 mod channel_stream;
@@ -143,6 +144,7 @@ impl WindowSizeRef {
 /// Allows you to read from a channel without borrowing the session
 pub struct ChannelReadHalf {
     pub(crate) receiver: Receiver<ChannelMsg>,
+    pub(crate) receive_state: Arc<ReceiveState>,
 }
 
 impl std::fmt::Debug for ChannelReadHalf {
@@ -154,7 +156,9 @@ impl std::fmt::Debug for ChannelReadHalf {
 impl ChannelReadHalf {
     /// Awaits an incoming [`ChannelMsg`], this method returns [`None`] if the channel has been closed.
     pub async fn wait(&mut self) -> Option<ChannelMsg> {
-        self.receiver.recv().await
+        let message = self.receiver.recv().await;
+        self.receive_state.read(message.as_ref());
+        message
     }
 
     /// Make a reader for the [`Channel`] to receive [`ChannelMsg::Data`]
@@ -167,6 +171,24 @@ impl ChannelReadHalf {
     /// depending on the `ext` parameter, through the `AsyncRead` trait.
     pub fn make_reader_ext(&mut self, ext: Option<u32>) -> impl AsyncRead + '_ {
         io::ChannelRx::new(self, ext)
+    }
+    pub(crate) fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<ChannelMsg>> {
+        let message = std::task::ready!(self.receiver.poll_recv(cx));
+        self.receive_state.read(message.as_ref());
+        std::task::Poll::Ready(message)
+    }
+}
+
+impl Drop for ChannelReadHalf {
+    fn drop(&mut self) {
+        self.receiver.close();
+        while let Ok(message) = self.receiver.try_recv() {
+            self.receive_state.read(Some(&message));
+        }
+        self.receive_state.read(None);
     }
 }
 
@@ -339,11 +361,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
     }
 
     /// Send owned extended data to a channel without copying it into the `AsyncWrite` path.
-    pub async fn extended_data_bytes(
-        &self,
-        ext: u32,
-        data: impl Into<Bytes>,
-    ) -> Result<(), Error> {
+    pub async fn extended_data_bytes(&self, ext: u32, data: impl Into<Bytes>) -> Result<(), Error> {
         self.send_bytes(Some(ext), data.into()).await
     }
 
@@ -468,7 +486,11 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     ) -> (Self, ChannelRef) {
         let (tx, rx) = tokio::sync::mpsc::channel(channel_buffer_size);
         let window_size = WindowSizeRef::new(window_size);
-        let read_half = ChannelReadHalf { receiver: rx };
+        let receive_state = Arc::new(ReceiveState::default());
+        let read_half = ChannelReadHalf {
+            receiver: rx,
+            receive_state: receive_state.clone(),
+        };
         let write_half = ChannelWriteHalf {
             id,
             sender,
@@ -484,6 +506,8 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             ChannelRef {
                 sender: tx,
                 window_size,
+                receive_state,
+                delivery: std::sync::Mutex::new(None),
             },
         )
     }
@@ -630,11 +654,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     }
 
     /// Send owned extended data to a channel without copying it into the `AsyncWrite` path.
-    pub async fn extended_data_bytes(
-        &self,
-        ext: u32,
-        data: impl Into<Bytes>,
-    ) -> Result<(), Error> {
+    pub async fn extended_data_bytes(&self, ext: u32, data: impl Into<Bytes>) -> Result<(), Error> {
         self.write_half.extended_data_bytes(ext, data).await
     }
 

@@ -1158,7 +1158,7 @@ async fn reply<H: Handler + Send>(
         // Kex will consume the packet right away
     }
 
-    let is_kex_msg = pkt.buffer.first().cloned().map(is_kex_msg).unwrap_or(false);
+    let is_kex_msg = pkt.buffer.first().copied().map(is_kex_msg).unwrap_or(false);
 
     // RFC 4253 s7.1: after a KEXINIT, only transport (1-19) and kex (20-49)
     // messages may flow until NEWKEYS. Non-transport messages (>= 50: auth and

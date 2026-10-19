@@ -161,6 +161,8 @@ impl Preferred {
 
 const SAFE_KEX_ORDER: &[kex::Name] = &[
     kex::MLKEM768X25519_SHA256,
+    kex::SNTRUP761X25519_SHA512,
+    kex::SNTRUP761X25519_SHA512_OPENSSH,
     kex::CURVE25519,
     kex::CURVE25519_PRE_RFC_8731,
     kex::DH_GEX_SHA256,
@@ -185,6 +187,7 @@ const KEX_EXTENSION_NAMES: &[kex::Name] = &[
 const CIPHER_ORDER: &[cipher::Name] = &[
     cipher::CHACHA20_POLY1305,
     cipher::AES_256_GCM,
+    cipher::AES_128_GCM,
     cipher::AES_256_CTR,
     cipher::AES_192_CTR,
     cipher::AES_128_CTR,
@@ -306,7 +309,7 @@ pub(crate) trait Select {
             .kex
             .iter()
             .filter(|k| !KEX_EXTENSION_NAMES.contains(k))
-            .cloned()
+            .copied()
             .collect::<Vec<_>>();
         let _remote_kexes_no_ext = kex_list
             .iter()

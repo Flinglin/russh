@@ -24,6 +24,7 @@ use bytes::Bytes;
 use log::{debug, trace};
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
+use zeroize::Zeroize;
 
 use crate::cipher::OpeningKey;
 use crate::client::GexParams;
@@ -301,7 +302,40 @@ impl Encrypted {
             0
         }
     }
+    pub(crate) fn consume_window(
+        &mut self,
+        id: ChannelId,
+        length: usize,
+    ) -> Result<(), crate::Error> {
+        let length = u32::try_from(length).map_err(|_| crate::Error::Inconsistent)?;
+        // Packets already in flight can arrive after the local close removed this channel.
+        if let Some(channel) = self.channels.get_mut(&id) {
+            channel.sender_window_size = channel
+                .sender_window_size
+                .checked_sub(length)
+                .ok_or(crate::Error::Inconsistent)?;
+        }
+        Ok(())
+    }
 
+    pub(crate) fn replenish_window(
+        &mut self,
+        id: ChannelId,
+        amount: u32,
+    ) -> Result<(), crate::Error> {
+        if let Some(channel) = self.channels.get_mut(&id) {
+            channel.sender_window_size = channel
+                .sender_window_size
+                .checked_add(amount)
+                .ok_or(crate::Error::Inconsistent)?;
+            push_packet!(self.write, {
+                self.write.push(msg::CHANNEL_WINDOW_ADJUST);
+                channel.recipient_channel.encode(&mut self.write)?;
+                amount.encode(&mut self.write)?;
+            });
+        }
+        Ok(())
+    }
     pub fn adjust_window_size(
         &mut self,
         channel: ChannelId,
@@ -717,7 +751,16 @@ impl Encrypted {
                     to_write.len()
                 );
 
-                writer.packet_raw(to_write)?;
+                let write_result = writer.packet_raw(to_write);
+                #[allow(clippy::indexing_slicing)]
+                self.write[self.write_cursor..(self.write_cursor + 4 + len)].zeroize();
+                if let Err(error) = write_result {
+                    // Packet encryption/compression failures are terminal for
+                    // this queue; wipe later queued secrets before returning.
+                    self.write_cursor = 0;
+                    self.write.zeroize();
+                    return Err(error);
+                }
                 self.write_cursor += 4 + len
             }
         }

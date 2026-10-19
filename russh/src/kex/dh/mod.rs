@@ -9,14 +9,15 @@ use num_bigint::BigUint;
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use ssh_encoding::{Decode, Encode, Reader, Writer};
+use zeroize::Zeroizing;
 
 use self::groups::{
-    DhGroup, DH_GROUP1, DH_GROUP14, DH_GROUP15, DH_GROUP16, DH_GROUP17, DH_GROUP18,
+    DH_GROUP1, DH_GROUP14, DH_GROUP15, DH_GROUP16, DH_GROUP17, DH_GROUP18, DhGroup,
 };
-use super::{compute_keys, KexAlgorithm, KexAlgorithmImplementor, KexType, SharedSecret};
+use super::{KexAlgorithm, KexAlgorithmImplementor, KexType, SharedSecret, compute_keys};
 use crate::client::GexParams;
 use crate::session::Exchange;
-use crate::{cipher, mac, msg, CryptoVec, Error};
+use crate::{CryptoVec, Error, cipher, mac, msg};
 
 pub(crate) struct DhGroup15Sha512KexType {}
 
@@ -93,7 +94,7 @@ impl KexType for DhGroup16Sha512KexType {
 #[doc(hidden)]
 pub(crate) struct DhGroupKex<D: Digest> {
     dh: Option<DH>,
-    shared_secret: Option<Vec<u8>>,
+    shared_secret: Option<Zeroizing<Vec<u8>>>,
     is_dh_gex: bool,
     _digest: PhantomData<D>,
 }
@@ -120,13 +121,13 @@ impl<D: Digest> std::fmt::Debug for DhGroupKex<D> {
 
 pub(crate) fn biguint_to_mpint(biguint: &BigUint) -> Vec<u8> {
     let mut mpint = Vec::new();
-    let bytes = biguint.to_bytes_be();
+    let bytes = Zeroizing::new(biguint.to_bytes_be());
     if let Some(b) = bytes.first()
         && b > &0x7f
     {
         mpint.push(0);
     }
-    mpint.extend(&bytes);
+    mpint.extend(bytes.iter().copied());
     mpint
 }
 
@@ -195,7 +196,9 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
 
         // fill exchange.
         exchange.server_ephemeral.clear();
-        exchange.server_ephemeral.extend_from_slice(&encoded_server_pubkey);
+        exchange
+            .server_ephemeral
+            .extend_from_slice(&encoded_server_pubkey);
 
         let decoded_client_pubkey = DH::decode_public_key(client_pubkey);
         if !dh.validate_public_key(&decoded_client_pubkey) {
@@ -206,7 +209,7 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
         if !dh.validate_shared_secret(&shared) {
             return Err(Error::Inconsistent);
         }
-        self.shared_secret = Some(biguint_to_mpint(&shared));
+        self.shared_secret = Some(Zeroizing::new(biguint_to_mpint(&shared)));
         Ok(())
     }
 
@@ -260,12 +263,12 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
         if !dh.validate_shared_secret(&shared) {
             return Err(Error::Inconsistent);
         }
-        self.shared_secret = Some(biguint_to_mpint(&shared));
+        self.shared_secret = Some(Zeroizing::new(biguint_to_mpint(&shared)));
         Ok(())
     }
 
     fn shared_secret_bytes(&self) -> Option<&[u8]> {
-        self.shared_secret.as_deref()
+        self.shared_secret.as_ref().map(|secret| secret.as_slice())
     }
 
     fn compute_exchange_hash(
@@ -314,7 +317,7 @@ impl<D: Digest> KexAlgorithmImplementor for DhGroupKex<D> {
         let shared_secret = self
             .shared_secret
             .as_deref()
-            .map(SharedSecret::from_mpint)
+            .map(|secret| SharedSecret::from_mpint(secret.as_slice()))
             .transpose()?;
 
         compute_keys::<D>(

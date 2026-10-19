@@ -64,6 +64,7 @@ use std::string::FromUtf8Error;
 use aes::cipher::inout::PadError;
 use data_encoding::BASE64_MIME;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::helpers::EncodedExt;
 
@@ -242,7 +243,7 @@ pub fn load_secret_key<P: AsRef<Path>>(
     password: Option<&str>,
 ) -> Result<PrivateKey, Error> {
     let mut secret_file = std::fs::File::open(secret_)?;
-    let mut secret = String::new();
+    let mut secret = Zeroizing::new(String::new());
     secret_file.read_to_string(&mut secret)?;
     decode_secret_key(&secret, password)
 }

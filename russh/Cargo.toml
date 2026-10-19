@@ -24,7 +24,6 @@ dsa = ["ssh-key/dsa"]
 ring = ["dep:ring"] # Alternative crypto backend.
 rsa = ["dep:rsa", "dep:pkcs1", "ssh-key/rsa"]
 serde = ["ssh-key/serde"]
-_bench = ["dep:criterion"]
 
 [dependencies]
 aes.workspace = true
@@ -95,6 +94,7 @@ typenum = "1.17"
 universal-hash = "0.6.1" # only pinned due to a cargo-minimal-versions failure in 0.6.0
 zeroize = "1.7"
 criterion = { version = "0.7", optional = true, features = ["html_reports"] }
+sntrup="0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
@@ -137,7 +137,3 @@ termion = "4"
 
 [package.metadata.docs.rs]
 all-features = true
-
-[[bench]]
-name = "ciphers"
-harness = false

@@ -37,6 +37,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::convert::TryInto;
+use std::fmt;
 use std::num::Wrapping;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -77,7 +78,6 @@ use crate::{
 mod encrypted;
 mod kex;
 mod session;
-
 
 /// Actual client session's state.
 ///
@@ -144,9 +144,9 @@ enum Reply {
     },
 }
 
-#[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Msg {
+    ChannelReadReady(ChannelId),
     Authenticate {
         user: String,
         method: auth::Method,
@@ -250,6 +250,153 @@ pub enum Msg {
         /// Provide a channel for the reply result to request a reply from the server
         reply_channel: Option<oneshot::Sender<Option<CryptoVec>>>,
     },
+}
+
+impl fmt::Debug for Msg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Client messages can be dumped while diagnosing auth flows; redact
+        // keyboard-interactive answers because they often contain passwords.
+        match self {
+            Self::ChannelReadReady(id) => f.debug_tuple("ChannelReadReady").field(id).finish(),
+            Self::Authenticate { user, method } => f
+                .debug_struct("Authenticate")
+                .field("user", user)
+                .field("method", method)
+                .finish(),
+            Self::AuthInfoResponse { .. } => f
+                .debug_struct("AuthInfoResponse")
+                .field("responses", &"<redacted>")
+                .finish(),
+            Self::AuthGssapiToken { .. } => f
+                .debug_struct("AuthGssapiToken")
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::AuthGssapiMic { token, .. } => f
+                .debug_struct("AuthGssapiMic")
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .field("mic", &"<redacted>")
+                .finish(),
+            Self::AuthGssapiExchangeComplete { token } => f
+                .debug_struct("AuthGssapiExchangeComplete")
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .finish(),
+            Self::Signed { data } => f.debug_struct("Signed").field("data", data).finish(),
+            Self::ChannelOpenSession { channel_ref } => f
+                .debug_struct("ChannelOpenSession")
+                .field("channel_ref", channel_ref)
+                .finish(),
+            Self::ChannelOpenX11 {
+                originator_address,
+                originator_port,
+                channel_ref,
+            } => f
+                .debug_struct("ChannelOpenX11")
+                .field("originator_address", originator_address)
+                .field("originator_port", originator_port)
+                .field("channel_ref", channel_ref)
+                .finish(),
+            Self::ChannelOpenDirectTcpIp {
+                host_to_connect,
+                port_to_connect,
+                originator_address,
+                originator_port,
+                channel_ref,
+            } => f
+                .debug_struct("ChannelOpenDirectTcpIp")
+                .field("host_to_connect", host_to_connect)
+                .field("port_to_connect", port_to_connect)
+                .field("originator_address", originator_address)
+                .field("originator_port", originator_port)
+                .field("channel_ref", channel_ref)
+                .finish(),
+            Self::ChannelOpenDirectStreamLocal {
+                socket_path,
+                channel_ref,
+            } => f
+                .debug_struct("ChannelOpenDirectStreamLocal")
+                .field("socket_path", socket_path)
+                .field("channel_ref", channel_ref)
+                .finish(),
+            Self::TcpIpForward { address, port, .. } => f
+                .debug_struct("TcpIpForward")
+                .field("reply_channel", &"<sender>")
+                .field("address", address)
+                .field("port", port)
+                .finish(),
+            Self::CancelTcpIpForward { address, port, .. } => f
+                .debug_struct("CancelTcpIpForward")
+                .field("reply_channel", &"<sender>")
+                .field("address", address)
+                .field("port", port)
+                .finish(),
+            Self::StreamLocalForward { socket_path, .. } => f
+                .debug_struct("StreamLocalForward")
+                .field("reply_channel", &"<sender>")
+                .field("socket_path", socket_path)
+                .finish(),
+            Self::CancelStreamLocalForward { socket_path, .. } => f
+                .debug_struct("CancelStreamLocalForward")
+                .field("reply_channel", &"<sender>")
+                .field("socket_path", socket_path)
+                .finish(),
+            Self::Close { id } => f.debug_struct("Close").field("id", id).finish(),
+            Self::Disconnect {
+                reason,
+                description,
+                language_tag,
+            } => f
+                .debug_struct("Disconnect")
+                .field("reason", reason)
+                .field("description", description)
+                .field("language_tag", language_tag)
+                .finish(),
+            Self::Channel(id, msg) => f.debug_tuple("Channel").field(id).field(msg).finish(),
+            Self::ServerChannelOpenReply { result, .. } => f
+                .debug_struct("ServerChannelOpenReply")
+                .field("result", result)
+                .finish(),
+            Self::Rekey => f.write_str("Rekey"),
+            Self::AwaitExtensionInfo { extension_name, .. } => f
+                .debug_struct("AwaitExtensionInfo")
+                .field("extension_name", extension_name)
+                .field("reply_channel", &"<sender>")
+                .finish(),
+            Self::GetServerSigAlgs { .. } => f
+                .debug_struct("GetServerSigAlgs")
+                .field("reply_channel", &"<sender>")
+                .finish(),
+            Self::Keepalive { want_reply } => f
+                .debug_struct("Keepalive")
+                .field("want_reply", want_reply)
+                .finish(),
+            Self::Ping { .. } => f
+                .debug_struct("Ping")
+                .field("reply_channel", &"<sender>")
+                .finish(),
+            Self::NoMoreSessions { want_reply } => f
+                .debug_struct("NoMoreSessions")
+                .field("want_reply", want_reply)
+                .finish(),
+            Self::HostKeysProve {
+                reply_channel,
+                keys,
+            } => f
+                .debug_struct("SendGlobalRequest")
+                .field("reply_channel", reply_channel)
+                 .field("keys", keys)
+                .finish(),
+            Self::SendGlobalRequest {
+                name,
+                data,
+                reply_channel,
+            } => f
+                .debug_struct("SendGlobalRequest")
+                .field("name", name)
+                .field("data", data)
+                .field("reply_channel", reply_channel)
+                .finish(),
+        }
+    }
 }
 
 impl From<(ChannelId, ChannelMsg)> for Msg {
@@ -393,7 +540,9 @@ impl<H: Handler> Handle<H> {
         responses: impl Into<Zeroizing<Vec<String>>>,
     ) -> Result<KeyboardInteractiveAuthResponse, crate::Error> {
         self.sender
-            .send(Msg::AuthInfoResponse { responses:responses.into() })
+            .send(Msg::AuthInfoResponse {
+                responses: responses.into(),
+            })
             .await
             .map_err(|_| crate::Error::SendError)?;
         self.wait_recv_keyboard_interactive_reply().await
@@ -699,9 +848,12 @@ impl<H: Handler> Handle<H> {
         &self,
         mut receiver: Receiver<ChannelMsg>,
         window_size_ref: WindowSizeRef,
+        receive_state: Arc<crate::channels::receive::ReceiveState>,
     ) -> Result<Channel<Msg>, crate::Error> {
         loop {
-            match receiver.recv().await {
+            let message = receiver.recv().await;
+            receive_state.read(message.as_ref());
+            match message {
                 Some(ChannelMsg::Open {
                     id,
                     max_packet_size,
@@ -716,7 +868,10 @@ impl<H: Handler> Handle<H> {
                             max_packet_size,
                             window_size: window_size_ref,
                         },
-                        read_half: ChannelReadHalf { receiver },
+                        read_half: ChannelReadHalf {
+                            receiver,
+                            receive_state,
+                        },
                     });
                 }
                 Some(ChannelMsg::OpenFailure(reason)) => {
@@ -802,12 +957,12 @@ impl<H: Handler> Handle<H> {
         let (sender, receiver) = channel(self.channel_buffer_size);
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
-
+        let receive_state = channel_ref.receive_state.clone();
         self.sender
             .send(Msg::ChannelOpenSession { channel_ref })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, receive_state)
             .await
     }
 
@@ -820,7 +975,7 @@ impl<H: Handler> Handle<H> {
         let (sender, receiver) = channel(self.channel_buffer_size);
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
-
+        let receive_state = channel_ref.receive_state.clone();
         self.sender
             .send(Msg::ChannelOpenX11 {
                 originator_address: originator_address.into(),
@@ -829,7 +984,7 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, receive_state)
             .await
     }
 
@@ -851,7 +1006,7 @@ impl<H: Handler> Handle<H> {
         let (sender, receiver) = channel(self.channel_buffer_size);
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
-
+        let receive_state = channel_ref.receive_state.clone();
         self.sender
             .send(Msg::ChannelOpenDirectTcpIp {
                 host_to_connect: host_to_connect.into(),
@@ -862,7 +1017,7 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, receive_state)
             .await
     }
 
@@ -873,7 +1028,7 @@ impl<H: Handler> Handle<H> {
         let (sender, receiver) = channel(self.channel_buffer_size);
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
-
+        let receive_state = channel_ref.receive_state.clone();
         self.sender
             .send(Msg::ChannelOpenDirectStreamLocal {
                 socket_path: socket_path.into(),
@@ -881,7 +1036,7 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, receive_state)
             .await
     }
 
@@ -1440,9 +1595,9 @@ impl Session {
                     return Err(crate::Error::InactivityTimeout.into());
                 }
                 msg = self.receiver.recv(), if can_receive_outbound => {
-                    self.drain_priority_msgs()?;
+                    self.drain_priority_msgs(handler)?;
                     match msg {
-                        Some(msg) => self.handle_msg(msg)?,
+                        Some(msg) => self.handle_msg(msg,handler)?,
                         None => {
                             self.common.disconnected = true;
                             break
@@ -1451,34 +1606,34 @@ impl Session {
 
                     // eagerly take all outgoing messages so writes are batched
                     while !self.kex.active() && !self.common.has_any_pending_data() {
-                        self.drain_priority_msgs()?;
+                        self.drain_priority_msgs(handler)?;
                         match self.receiver.try_recv() {
-                            Ok(next) => self.handle_msg(next)?,
+                            Ok(next) => self.handle_msg(next,handler)?,
                             Err(_) => break
                         }
                     }
                 }
                 msg = self.priority_receiver.recv(), if !self.kex.active() => {
                     match msg {
-                        Some(msg) => self.handle_msg(msg)?,
+                        Some(msg) => self.handle_msg(msg,handler)?,
                         None => (),
                     }
 
                     // eagerly take all outgoing messages so writes are batched
-                    self.drain_priority_msgs()?;
+                    self.drain_priority_msgs(handler)?;
                 }
                 msg = self.inbound_channel_receiver.recv(), if can_receive_outbound => {
-                    self.drain_priority_msgs()?;
+                    self.drain_priority_msgs(handler)?;
                     match msg {
-                        Some(msg) => self.handle_msg(msg)?,
+                        Some(msg) => self.handle_msg(msg,handler)?,
                         None => (),
                     }
 
                     // eagerly take all outgoing messages so writes are batched
                     while !self.kex.active() && !self.common.has_any_pending_data() {
-                        self.drain_priority_msgs()?;
+                        self.drain_priority_msgs(handler)?;
                         match self.inbound_channel_receiver.try_recv() {
-                            Ok(next) => self.handle_msg(next)?,
+                            Ok(next) => self.handle_msg(next,handler)?,
                             Err(_) => break
                         }
                     }
@@ -1556,18 +1711,75 @@ impl Session {
     /// whose confirmation is still sitting in the priority queue, and
     /// dispatching that data first would silently drop it (the channel is
     /// only registered when its open reply is processed).
-    fn drain_priority_msgs(&mut self) -> Result<(), crate::Error> {
+    fn drain_priority_msgs(&mut self, handler: &mut impl Handler) -> Result<(), crate::Error> {
         while !self.kex.active() {
             match self.priority_receiver.try_recv() {
-                Ok(msg) => self.handle_msg(msg)?,
+                Ok(msg) => self.handle_msg(msg, handler)?,
                 Err(_) => break,
             }
         }
         Ok(())
     }
-
-    fn handle_msg(&mut self, msg: Msg) -> Result<(), crate::Error> {
+    fn configure_channel_receiver(&self, id: ChannelId, channel: &ChannelRef) {
+        let sender = self.priority_sender.clone();
+        channel.enable_receive_flow(
+            self.common.config.maximum_packet_size as usize,
+            self.common.config.channel_buffer_size,
+            Arc::new(move || {
+                let _ = sender.send(Msg::ChannelReadReady(id));
+            }),
+        );
+    }
+    fn channel_read_ready(
+        &mut self,
+        id: ChannelId,
+        handler: &mut impl Handler,
+    ) -> Result<(), crate::Error> {
+        let Some(channel) = self.channels.get(&id) else {
+            return Ok(());
+        };
+        let consumed = channel.receive_state.take_consumed();
+        let (credit, remove) = {
+            let mut delivery = channel.delivery.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(delivery) = delivery.as_mut() else {
+                return Ok(());
+            };
+            delivery.flush(channel, &channel.receive_state);
+            delivery.reclaimed = delivery
+                .reclaimed
+                .checked_add(consumed)
+                .ok_or(crate::Error::Inconsistent)?;
+            let remaining = self
+                .common
+                .encrypted
+                .as_ref()
+                .and_then(|enc| enc.channels.get(&id))
+                .map_or(0, |channel| channel.sender_window_size);
+            let credit =
+                if delivery.reclaimed >= self.common.config.window_size / 2 || remaining == 0 {
+                    std::mem::take(&mut delivery.reclaimed)
+                } else {
+                    0
+                };
+            (credit, delivery.closing && delivery.is_empty())
+        };
+        if credit > 0 {
+            if let Some(enc) = &mut self.common.encrypted {
+                enc.replenish_window(id, credit)?;
+            }
+            let next_window = handler.adjust_window(id, self.target_window_size);
+            if next_window > 0 {
+                self.target_window_size = next_window;
+            }
+        }
+        if remove {
+            self.channels.remove(&id);
+        }
+        Ok(())
+    }
+    fn handle_msg(&mut self, msg: Msg, handler: &mut impl Handler) -> Result<(), crate::Error> {
         match msg {
+            Msg::ChannelReadReady(id) => self.channel_read_ready(id, handler)?,
             Msg::Authenticate { user, method } => {
                 self.write_auth_request_if_needed(&user, method)?;
             }
@@ -1585,11 +1797,14 @@ impl Session {
             }
             Msg::AuthGssapiExchangeComplete { token } => {
                 if let Some(ref mut enc) = self.common.encrypted {
-                    enc.client_send_gssapi_exchange_complete(token.as_ref().map(|token| token.as_slice()))?;
+                    enc.client_send_gssapi_exchange_complete(
+                        token.as_ref().map(|token| token.as_slice()),
+                    )?;
                 }
             }
             Msg::ChannelOpenSession { channel_ref } => {
                 let id = self.channel_open_session()?;
+                self.configure_channel_receiver(id, &channel_ref);
                 self.channels.insert(id, channel_ref);
             }
             Msg::ChannelOpenX11 {
@@ -1598,6 +1813,7 @@ impl Session {
                 channel_ref,
             } => {
                 let id = self.channel_open_x11(&originator_address, originator_port)?;
+                self.configure_channel_receiver(id, &channel_ref);
                 self.channels.insert(id, channel_ref);
             }
             Msg::ChannelOpenDirectTcpIp {
@@ -1613,6 +1829,7 @@ impl Session {
                     &originator_address,
                     originator_port,
                 )?;
+                self.configure_channel_receiver(id, &channel_ref);
                 self.channels.insert(id, channel_ref);
             }
             Msg::ChannelOpenDirectStreamLocal {
@@ -1620,6 +1837,7 @@ impl Session {
                 channel_ref,
             } => {
                 let id = self.channel_open_direct_streamlocal(&socket_path)?;
+                self.configure_channel_receiver(id, &channel_ref);
                 self.channels.insert(id, channel_ref);
             }
             Msg::TcpIpForward {
@@ -1919,7 +2137,7 @@ async fn reply<H: Handler>(
         // Kex will consume the packet right away
     }
 
-    let is_kex_msg = pkt.buffer.first().cloned().map(is_kex_msg).unwrap_or(false);
+    let is_kex_msg = pkt.buffer.first().copied().map(is_kex_msg).unwrap_or(false);
 
     // RFC 4253 s7.1: after a KEXINIT, only transport (1-19) and kex (20-49)
     // messages may flow until NEWKEYS. Non-transport messages (>= 50: auth and

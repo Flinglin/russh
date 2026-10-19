@@ -17,12 +17,13 @@ use core::fmt;
 use std::borrow::Cow;
 use std::num::Wrapping;
 
+use super::cipher::SealingKey;
 use bytes::{Bytes, BytesMut};
+use compression::Compress;
 use log::debug;
 use ssh_encoding::Writer;
-use super::cipher::SealingKey;
-use compression::Compress;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroize;
 
 use super::*;
 
@@ -206,6 +207,9 @@ impl PacketWriter {
                 Ok(())
             }
             Err(err) => {
+                if let Some(payload) = self.write_buffer.buffer.get_mut(offset..) {
+                    payload.zeroize();
+                }
                 self.write_buffer.buffer.truncate(offset);
                 Err(err)
             }
@@ -232,6 +236,9 @@ impl PacketWriter {
                 Ok(())
             }
             Err(err) => {
+                if let Some(payload) = self.write_buffer.buffer.get_mut(offset..) {
+                    payload.zeroize();
+                }
                 self.write_buffer.buffer.truncate(offset);
                 Err(err)
             }
@@ -284,7 +291,8 @@ impl PacketWriter {
         // Reserving a small fixed margin avoids repeated output-buffer growth
         // without coupling callers to individual cipher padding formulas.
         let per_packet_margin = Self::PACKET_PREFIX_LEN + self.cipher.tag_len() + 32;
-        let additional = payload_bytes.saturating_add(packet_count.saturating_mul(per_packet_margin));
+        let additional =
+            payload_bytes.saturating_add(packet_count.saturating_mul(per_packet_margin));
         self.write_buffer.buffer.reserve(additional);
     }
 
