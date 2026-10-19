@@ -23,14 +23,14 @@ use ssh_key::{Algorithm, Certificate, EcdsaCurve, HashAlg, PrivateKey};
 use crate::cipher::CIPHERS;
 use crate::helpers::{AlgorithmExt, NameList};
 use crate::kex::{
-    KexCause, EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT, EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+    EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT, EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER, KexCause,
 };
 use crate::keys::key::safe_rng;
 use crate::parsing::ensure_end;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::Config;
 use crate::sshbuffer::PacketWriter;
-use crate::{cipher, compression, kex, mac, msg, AlgorithmKind, Error};
+use crate::{AlgorithmKind, Error, cipher, compression, kex, mac, msg};
 
 #[cfg(target_arch = "wasm32")]
 /// WASM-only stub
@@ -242,6 +242,32 @@ impl Preferred {
         mac: Cow::Borrowed(SAFE_HMAC_ORDER),
         compression: Cow::Borrowed(COMPRESSION_ORDER),
     };
+
+    pub fn legacy_compatibility() -> Preferred {
+        let mut kex = SAFE_KEX_ORDER.to_vec();
+        // Legacy algorithms are appended so modern servers still negotiate the
+        // stronger default choices when any overlap exists.
+        kex.extend_from_slice(&[kex::DH_GEX_SHA1, kex::DH_G14_SHA1, kex::DH_G1_SHA1]);
+
+        let mut cipher = CIPHER_ORDER.to_vec();
+        cipher.extend_from_slice(&[
+            cipher::AES_256_CBC,
+            cipher::AES_192_CBC,
+            cipher::AES_128_CBC,
+        ]);
+
+        let mut mac = SAFE_HMAC_ORDER.to_vec();
+        mac.extend_from_slice(&[mac::HMAC_SHA1_ETM, mac::HMAC_SHA1]);
+
+        Preferred {
+            kex: Cow::Owned(kex),
+            host_key_certificates: Preferred::DEFAULT.host_key_certificates,
+            key: Preferred::DEFAULT.key,
+            cipher: Cow::Owned(cipher),
+            mac: Cow::Owned(mac),
+            compression: Cow::Borrowed(COMPRESSION_ORDER),
+        }
+    }
 }
 
 impl Default for Preferred {
