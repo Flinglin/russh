@@ -172,14 +172,6 @@ impl ChannelReadHalf {
     pub fn make_reader_ext(&mut self, ext: Option<u32>) -> impl AsyncRead + '_ {
         io::ChannelRx::new(self, ext)
     }
-    pub(crate) fn poll_recv(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<ChannelMsg>> {
-        let message = std::task::ready!(self.receiver.poll_recv(cx));
-        self.receive_state.read(message.as_ref());
-        std::task::Poll::Ready(message)
-    }
 }
 
 impl Drop for ChannelReadHalf {
